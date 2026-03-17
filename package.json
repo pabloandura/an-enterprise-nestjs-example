@@ -1,0 +1,9 @@
+{
+  "name": "an-enterprise-nestjs-example",
+  "version": "1.0.0",
+  "description": "This application demonstrates concepts of my recent conversation with Horacio.",
+  "main": "index.js",
+  "author": "Pablo Andura",
+  "license": "MIT",
+  "private": false
+}
