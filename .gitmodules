@@ -1,6 +1,6 @@
 [submodule "backend"]
 	path = backend
-	url = ../backend-nestjs
+	url = https://github.com/pabloandura/backend-nestjs.git
 [submodule "frontend"]
 	path = frontend
-	url = ../frontend-react
+	url = https://github.com/pabloandura/frontend-react.git
