@@ -1,0 +1,484 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Compute — ECR repositories, IAM roles, ECS cluster, CloudWatch log groups,
+  task definitions, Application Load Balancer, target groups, and ECS services.
+
+Parameters:
+  AppName:
+    Type: String
+    Default: nestjs-ecommerce
+
+  # The ARN of the Secrets Manager secret created in step 7 of the deployment guide.
+  # Format: arn:aws:secretsmanager:<region>:<account>:secret:<name>-<suffix>
+  ApiSecretArn:
+    Type: String
+    Description: ARN of the Secrets Manager secret that holds all API env vars
+
+  ApiImageUri:
+    Type: String
+    Description: >
+      Full ECR image URI for the API, e.g.
+      123456789012.dkr.ecr.us-east-1.amazonaws.com/nestjs-ecommerce/api:latest
+    Default: PLACEHOLDER_API_IMAGE
+
+  FrontendImageUri:
+    Type: String
+    Description: >
+      Full ECR image URI for the frontend, e.g.
+      123456789012.dkr.ecr.us-east-1.amazonaws.com/nestjs-ecommerce/frontend:latest
+    Default: PLACEHOLDER_FRONTEND_IMAGE
+
+  ApiDesiredCount:
+    Type: Number
+    Default: 1
+
+  FrontendDesiredCount:
+    Type: Number
+    Default: 1
+
+Resources:
+
+  # ── ECR Repositories ──────────────────────────────────────────────────────────
+
+  ApiRepository:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: !Sub ${AppName}/api
+      ImageScanningConfiguration:
+        ScanOnPush: true
+      LifecyclePolicy:
+        # Keep only the 5 most recent images — sufficient for rollback at this scale
+        LifecyclePolicyText: |
+          {
+            "rules": [{
+              "rulePriority": 1,
+              "description": "Keep last 5 images",
+              "selection": {
+                "tagStatus": "any",
+                "countType": "imageCountMoreThan",
+                "countNumber": 5
+              },
+              "action": { "type": "expire" }
+            }]
+          }
+      Tags:
+        - Key: Name
+          Value: !Sub ${AppName}/api
+
+  FrontendRepository:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: !Sub ${AppName}/frontend
+      ImageScanningConfiguration:
+        ScanOnPush: true
+      LifecyclePolicy:
+        LifecyclePolicyText: |
+          {
+            "rules": [{
+              "rulePriority": 1,
+              "description": "Keep last 5 images",
+              "selection": {
+                "tagStatus": "any",
+                "countType": "imageCountMoreThan",
+                "countNumber": 5
+              },
+              "action": { "type": "expire" }
+            }]
+          }
+      Tags:
+        - Key: Name
+          Value: !Sub ${AppName}/frontend
+
+  # ── IAM: Task Execution Role (ECS agent — pulls images + reads secrets) ───────
+
+  EcsExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${AppName}-ecs-execution-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+      Policies:
+        - PolicyName: SecretsManagerRead
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: secretsmanager:GetSecretValue
+                Resource: !Ref ApiSecretArn
+
+  # ── IAM: Task Role (what the running app is allowed to do — S3 uploads) ───────
+
+  EcsTaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${AppName}-ecs-task-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: S3Uploads
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:GetObject
+                  - s3:DeleteObject
+                  - s3:ListBucket
+                Resource:
+                  - !ImportValue
+                    Fn::Sub: ${AppName}-UploadsBucketArn
+                  - !Sub
+                    - '${BucketArn}/*'
+                    - BucketArn: !ImportValue
+                        Fn::Sub: ${AppName}-UploadsBucketArn
+
+  # ── IAM: GitHub Actions OIDC Role (CI/CD deploys without static keys) ─────────
+
+  GitHubActionsRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${AppName}-github-actions-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !Sub arn:aws:iam::${AWS::AccountId}:oidc-provider/token.actions.githubusercontent.com
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                'token.actions.githubusercontent.com:aud': sts.amazonaws.com
+              # Replace pabloandura/an-enterprise-nestjs-example with your actual org/repo
+              StringLike:
+                'token.actions.githubusercontent.com:sub': repo:pabloandura/an-enterprise-nestjs-example:*
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryFullAccess
+        - arn:aws:iam::aws:policy/AmazonECS_FullAccess
+
+  # ── CloudWatch Log Groups ──────────────────────────────────────────────────────
+
+  ApiLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /ecs/${AppName}/api
+      RetentionInDays: 7
+
+  FrontendLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /ecs/${AppName}/frontend
+      RetentionInDays: 3
+
+  # ── ECS Cluster ───────────────────────────────────────────────────────────────
+
+  EcsCluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: !Sub ${AppName}-cluster
+      CapacityProviders:
+        - FARGATE
+        - FARGATE_SPOT
+      DefaultCapacityProviderStrategy:
+        - CapacityProvider: FARGATE
+          Weight: 1
+      # Container Insights disabled — costs ~$0.35/GB ingested, not needed at this scale
+      ClusterSettings:
+        - Name: containerInsights
+          Value: disabled
+      Tags:
+        - Key: Name
+          Value: !Sub ${AppName}-cluster
+
+  # ── Task Definitions ──────────────────────────────────────────────────────────
+
+  ApiTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub ${AppName}-api
+      NetworkMode: awsvpc
+      RequiresCompatibilities: [FARGATE]
+      # 256 vCPU / 512 MB — handles 3 concurrent users comfortably
+      Cpu: '256'
+      Memory: '512'
+      ExecutionRoleArn: !GetAtt EcsExecutionRole.Arn
+      TaskRoleArn: !GetAtt EcsTaskRole.Arn
+      ContainerDefinitions:
+        - Name: api
+          Image: !Ref ApiImageUri
+          PortMappings:
+            - ContainerPort: 3000
+              Protocol: tcp
+          # Every key in the Secrets Manager JSON is injected as an env var
+          Secrets:
+            - Name: NODE_ENV
+              ValueFrom: !Sub '${ApiSecretArn}:NODE_ENV::'
+            - Name: PORT
+              ValueFrom: !Sub '${ApiSecretArn}:PORT::'
+            - Name: JWT_SECRET
+              ValueFrom: !Sub '${ApiSecretArn}:JWT_SECRET::'
+            - Name: JWT_ACCESS_EXPIRES_IN
+              ValueFrom: !Sub '${ApiSecretArn}:JWT_ACCESS_EXPIRES_IN::'
+            - Name: JWT_REFRESH_EXPIRES_IN
+              ValueFrom: !Sub '${ApiSecretArn}:JWT_REFRESH_EXPIRES_IN::'
+            - Name: POSTGRES_HOST
+              ValueFrom: !Sub '${ApiSecretArn}:POSTGRES_HOST::'
+            - Name: POSTGRES_PORT
+              ValueFrom: !Sub '${ApiSecretArn}:POSTGRES_PORT::'
+            - Name: POSTGRES_USER
+              ValueFrom: !Sub '${ApiSecretArn}:POSTGRES_USER::'
+            - Name: POSTGRES_PASSWORD
+              ValueFrom: !Sub '${ApiSecretArn}:POSTGRES_PASSWORD::'
+            - Name: POSTGRES_DB
+              ValueFrom: !Sub '${ApiSecretArn}:POSTGRES_DB::'
+            - Name: MONGO_URI
+              ValueFrom: !Sub '${ApiSecretArn}:MONGO_URI::'
+            - Name: STORAGE_DRIVER
+              ValueFrom: !Sub '${ApiSecretArn}:STORAGE_DRIVER::'
+            - Name: AWS_REGION
+              ValueFrom: !Sub '${ApiSecretArn}:AWS_REGION::'
+            - Name: AWS_S3_BUCKET
+              ValueFrom: !Sub '${ApiSecretArn}:AWS_S3_BUCKET::'
+            - Name: CORS_ORIGIN
+              ValueFrom: !Sub '${ApiSecretArn}:CORS_ORIGIN::'
+          HealthCheck:
+            Command: ['CMD-SHELL', 'wget -qO- http://localhost:3000/health || exit 1']
+            Interval: 30
+            Timeout: 5
+            Retries: 3
+            StartPeriod: 60
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref ApiLogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: api
+          Essential: true
+
+  FrontendTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub ${AppName}-frontend
+      NetworkMode: awsvpc
+      RequiresCompatibilities: [FARGATE]
+      Cpu: '256'
+      Memory: '512'
+      ExecutionRoleArn: !GetAtt EcsExecutionRole.Arn
+      ContainerDefinitions:
+        - Name: frontend
+          Image: !Ref FrontendImageUri
+          PortMappings:
+            - ContainerPort: 80
+              Protocol: tcp
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref FrontendLogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: frontend
+          Essential: true
+
+  # ── Application Load Balancer ─────────────────────────────────────────────────
+
+  ApplicationLoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: !Sub ${AppName}-alb
+      Scheme: internet-facing
+      Type: application
+      Subnets:
+        - !ImportValue
+          Fn::Sub: ${AppName}-PublicSubnetA
+        - !ImportValue
+          Fn::Sub: ${AppName}-PublicSubnetB
+      SecurityGroups:
+        - !ImportValue
+          Fn::Sub: ${AppName}-AlbSgId
+      Tags:
+        - Key: Name
+          Value: !Sub ${AppName}-alb
+
+  # ── Target Groups ─────────────────────────────────────────────────────────────
+
+  ApiTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub ${AppName}-api-tg
+      Protocol: HTTP
+      Port: 3000
+      VpcId: !ImportValue
+        Fn::Sub: ${AppName}-VpcId
+      TargetType: ip
+      HealthCheckPath: /health
+      HealthCheckIntervalSeconds: 30
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 3
+      HealthCheckTimeoutSeconds: 5
+      Matcher:
+        HttpCode: '200'
+      Tags:
+        - Key: Name
+          Value: !Sub ${AppName}-api-tg
+
+  FrontendTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub ${AppName}-frontend-tg
+      Protocol: HTTP
+      Port: 80
+      VpcId: !ImportValue
+        Fn::Sub: ${AppName}-VpcId
+      TargetType: ip
+      HealthCheckPath: /
+      HealthCheckIntervalSeconds: 30
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 3
+      HealthCheckTimeoutSeconds: 5
+      Matcher:
+        HttpCode: '200'
+      Tags:
+        - Key: Name
+          Value: !Sub ${AppName}-frontend-tg
+
+  # ── ALB Listener + Rules ──────────────────────────────────────────────────────
+
+  HttpListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref ApplicationLoadBalancer
+      Protocol: HTTP
+      Port: 80
+      # Default: send everything to the frontend
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref FrontendTargetGroup
+
+  ApiListenerRule:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Properties:
+      ListenerArn: !Ref HttpListener
+      Priority: 10
+      # /api/* goes to the API
+      Conditions:
+        - Field: path-pattern
+          Values: ['/api/*']
+      Actions:
+        - Type: forward
+          TargetGroupArn: !Ref ApiTargetGroup
+
+  # ── ECS Services ──────────────────────────────────────────────────────────────
+
+  ApiService:
+    Type: AWS::ECS::Service
+    DependsOn: ApiListenerRule
+    Properties:
+      ServiceName: api
+      Cluster: !Ref EcsCluster
+      TaskDefinition: !Ref ApiTaskDefinition
+      LaunchType: FARGATE
+      DesiredCount: !Ref ApiDesiredCount
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          Subnets:
+            - !ImportValue
+              Fn::Sub: ${AppName}-PrivateSubnetA
+            - !ImportValue
+              Fn::Sub: ${AppName}-PrivateSubnetB
+          SecurityGroups:
+            - !ImportValue
+              Fn::Sub: ${AppName}-ApiSgId
+          AssignPublicIp: DISABLED
+      LoadBalancers:
+        - ContainerName: api
+          ContainerPort: 3000
+          TargetGroupArn: !Ref ApiTargetGroup
+      HealthCheckGracePeriodSeconds: 60
+      DeploymentConfiguration:
+        MinimumHealthyPercent: 100
+        MaximumPercent: 200
+        DeploymentCircuitBreaker:
+          Enable: true
+          Rollback: true
+
+  FrontendService:
+    Type: AWS::ECS::Service
+    DependsOn: HttpListener
+    Properties:
+      ServiceName: frontend
+      Cluster: !Ref EcsCluster
+      TaskDefinition: !Ref FrontendTaskDefinition
+      LaunchType: FARGATE
+      DesiredCount: !Ref FrontendDesiredCount
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          Subnets:
+            - !ImportValue
+              Fn::Sub: ${AppName}-PrivateSubnetA
+            - !ImportValue
+              Fn::Sub: ${AppName}-PrivateSubnetB
+          SecurityGroups:
+            - !ImportValue
+              Fn::Sub: ${AppName}-FrontendSgId
+          AssignPublicIp: DISABLED
+      LoadBalancers:
+        - ContainerName: frontend
+          ContainerPort: 80
+          TargetGroupArn: !Ref FrontendTargetGroup
+      HealthCheckGracePeriodSeconds: 30
+      DeploymentConfiguration:
+        MinimumHealthyPercent: 100
+        MaximumPercent: 200
+        DeploymentCircuitBreaker:
+          Enable: true
+          Rollback: true
+
+# ── Outputs ───────────────────────────────────────────────────────────────────
+Outputs:
+  AlbDnsName:
+    Value: !GetAtt ApplicationLoadBalancer.DNSName
+    Description: Paste this into your browser to reach the app
+    Export:
+      Name: !Sub ${AppName}-AlbDnsName
+
+  EcsClusterName:
+    Value: !Ref EcsCluster
+    Export:
+      Name: !Sub ${AppName}-EcsClusterName
+
+  ApiRepositoryUri:
+    Value: !GetAtt ApiRepository.RepositoryUri
+    Export:
+      Name: !Sub ${AppName}-ApiRepositoryUri
+
+  FrontendRepositoryUri:
+    Value: !GetAtt FrontendRepository.RepositoryUri
+    Export:
+      Name: !Sub ${AppName}-FrontendRepositoryUri
+
+  ApiServiceName:
+    Value: !GetAtt ApiService.Name
+    Export:
+      Name: !Sub ${AppName}-ApiServiceName
+
+  FrontendServiceName:
+    Value: !GetAtt FrontendService.Name
+    Export:
+      Name: !Sub ${AppName}-FrontendServiceName
+
+  GitHubActionsRoleArn:
+    Value: !GetAtt GitHubActionsRole.Arn
+    Description: Add this as AWS_ROLE_ARN secret in your GitHub repository
+    Export:
+      Name: !Sub ${AppName}-GitHubActionsRoleArn

@@ -1,0 +1,50 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Storage — S3 bucket for product image uploads.
+  Public access is fully blocked; the ECS task role is granted PutObject/GetObject.
+
+Parameters:
+  AppName:
+    Type: String
+    Default: nestjs-ecommerce
+
+Resources:
+
+  UploadsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub ${AppName}-uploads-${AWS::AccountId}
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        IgnorePublicAcls: true
+        BlockPublicPolicy: true
+        RestrictPublicBuckets: true
+      VersioningConfiguration:
+        Status: Enabled
+      LifecycleConfiguration:
+        Rules:
+          # Remove incomplete multipart uploads after 7 days
+          - Id: CleanupIncompleteMultipartUploads
+            Status: Enabled
+            AbortIncompleteMultipartUpload:
+              DaysAfterInitiation: 7
+      CorsConfiguration:
+        CorsRules:
+          - AllowedHeaders: ['*']
+            AllowedMethods: [GET, PUT, POST]
+            AllowedOrigins: ['*']
+            MaxAge: 3000
+      Tags:
+        - Key: Name
+          Value: !Sub ${AppName}-uploads
+
+Outputs:
+  BucketName:
+    Value: !Ref UploadsBucket
+    Export:
+      Name: !Sub ${AppName}-UploadsBucketName
+
+  BucketArn:
+    Value: !GetAtt UploadsBucket.Arn
+    Export:
+      Name: !Sub ${AppName}-UploadsBucketArn

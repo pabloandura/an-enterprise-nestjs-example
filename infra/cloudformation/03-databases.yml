@@ -1,0 +1,144 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Databases — RDS PostgreSQL 16 (auth) and DocumentDB 5.0 (products + orders).
+  Both live in the isolated DB subnets with no route to the internet.
+
+Parameters:
+  AppName:
+    Type: String
+    Default: nestjs-ecommerce
+
+  # ── RDS ──────────────────────────────────────────────────────────────────────
+  PostgresPassword:
+    Type: String
+    NoEcho: true
+    MinLength: 16
+    Description: Master password for RDS PostgreSQL (min 16 chars)
+
+  PostgresInstanceClass:
+    Type: String
+    Default: db.t4g.micro
+    AllowedValues: [db.t4g.micro, db.t4g.small, db.t4g.medium, db.t3.micro, db.t3.small]
+
+  # ── DocumentDB ───────────────────────────────────────────────────────────────
+  DocDbPassword:
+    Type: String
+    NoEcho: true
+    MinLength: 16
+    Description: Master password for DocumentDB (min 16 chars)
+
+  DocDbInstanceClass:
+    Type: String
+    Default: db.t4g.medium
+    AllowedValues: [db.t4g.medium, db.t4g.large, db.r6g.large]
+
+Resources:
+
+  # ── RDS Subnet Group ──────────────────────────────────────────────────────────
+  RdsSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: !Sub ${AppName} RDS subnet group
+      SubnetIds:
+        - !ImportValue
+          Fn::Sub: ${AppName}-DbSubnetA
+        - !ImportValue
+          Fn::Sub: ${AppName}-DbSubnetB
+      Tags:
+        - Key: Name
+          Value: !Sub ${AppName}-rds-subnet-group
+
+  # ── RDS PostgreSQL ────────────────────────────────────────────────────────────
+  PostgresInstance:
+    Type: AWS::RDS::DBInstance
+    DeletionPolicy: Snapshot
+    Properties:
+      DBInstanceIdentifier: !Sub ${AppName}-postgres
+      DBInstanceClass: !Ref PostgresInstanceClass
+      Engine: postgres
+      EngineVersion: '16.3'
+      MasterUsername: auth_user
+      MasterUserPassword: !Ref PostgresPassword
+      DBName: auth_db
+      DBSubnetGroupName: !Ref RdsSubnetGroup
+      VPCSecurityGroups:
+        - !ImportValue
+          Fn::Sub: ${AppName}-RdsSgId
+      PubliclyAccessible: false
+      StorageType: gp3
+      AllocatedStorage: '20'
+      # No autoscaling — 20 GB is ample for 3 users
+      StorageEncrypted: true
+      BackupRetentionPeriod: 1
+      DeletionProtection: true
+      # Performance Insights disabled — not needed at this scale
+      EnablePerformanceInsights: false
+      Tags:
+        - Key: Name
+          Value: !Sub ${AppName}-postgres
+
+  # ── DocumentDB Subnet Group ───────────────────────────────────────────────────
+  DocDbSubnetGroup:
+    Type: AWS::DocDB::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: !Sub ${AppName} DocumentDB subnet group
+      SubnetIds:
+        - !ImportValue
+          Fn::Sub: ${AppName}-DbSubnetA
+        - !ImportValue
+          Fn::Sub: ${AppName}-DbSubnetB
+      Tags:
+        - Key: Name
+          Value: !Sub ${AppName}-docdb-subnet-group
+
+  # ── DocumentDB Cluster ────────────────────────────────────────────────────────
+  DocDbCluster:
+    Type: AWS::DocDB::DBCluster
+    DeletionPolicy: Snapshot
+    Properties:
+      DBClusterIdentifier: !Sub ${AppName}-docdb
+      MasterUsername: docdb_user
+      MasterUserPassword: !Ref DocDbPassword
+      DBSubnetGroupName: !Ref DocDbSubnetGroup
+      VpcSecurityGroupIds:
+        - !ImportValue
+          Fn::Sub: ${AppName}-DocDbSgId
+      StorageEncrypted: true
+      BackupRetentionPeriod: 1
+      DeletionProtection: true
+      # TLS is enabled by default on DocumentDB — do not disable
+      Tags:
+        - Key: Name
+          Value: !Sub ${AppName}-docdb
+
+  # ── DocumentDB Instance ────────────────────────────────────────────────────────
+  DocDbInstance:
+    Type: AWS::DocDB::DBInstance
+    Properties:
+      DBInstanceIdentifier: !Sub ${AppName}-docdb-instance-1
+      DBClusterIdentifier: !Ref DocDbCluster
+      DBInstanceClass: !Ref DocDbInstanceClass
+      Tags:
+        - Key: Name
+          Value: !Sub ${AppName}-docdb-instance-1
+
+Outputs:
+  PostgresEndpoint:
+    Value: !GetAtt PostgresInstance.Endpoint.Address
+    Export:
+      Name: !Sub ${AppName}-PostgresEndpoint
+
+  PostgresPort:
+    Value: !GetAtt PostgresInstance.Endpoint.Port
+    Export:
+      Name: !Sub ${AppName}-PostgresPort
+
+  DocDbEndpoint:
+    Value: !GetAtt DocDbCluster.Endpoint
+    Export:
+      Name: !Sub ${AppName}-DocDbEndpoint
+
+  DocDbPort:
+    Value: !GetAtt DocDbCluster.Port
+    Export:
+      Name: !Sub ${AppName}-DocDbPort
