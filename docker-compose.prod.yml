@@ -1,0 +1,87 @@
+name: ecommerce-prod
+
+services:
+  # ── API ──────────────────────────────────────────────────────────────────────
+  api:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+      target: production
+    ports:
+      - "3000:3000"
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      JWT_SECRET: ${JWT_SECRET}
+      JWT_ACCESS_EXPIRES_IN: ${JWT_ACCESS_EXPIRES_IN:-15m}
+      JWT_REFRESH_EXPIRES_IN: ${JWT_REFRESH_EXPIRES_IN:-7d}
+      POSTGRES_HOST: ${POSTGRES_HOST}
+      POSTGRES_PORT: ${POSTGRES_PORT:-5432}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+      MONGO_URI: ${MONGO_URI}
+      STORAGE_DRIVER: s3
+      AWS_REGION: ${AWS_REGION}
+      AWS_S3_BUCKET: ${AWS_S3_BUCKET}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+      CORS_ORIGIN: ${CORS_ORIGIN}
+    # No volumes — production image is self-contained; S3 handles file storage
+    restart: always
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    # In production, databases are external (RDS + Atlas or managed containers).
+    # Remove the depends_on block and set connection strings via env vars above.
+    # Uncomment the section below only if running DB containers alongside the API:
+    # depends_on:
+    #   postgres:
+    #     condition: service_healthy
+    #   mongo:
+    #     condition: service_healthy
+
+  # ── Frontend ──────────────────────────────────────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      target: production
+    ports:
+      - "8080:80"
+    environment:
+      # Nginx proxies /api/* to the api service — no VITE_ var needed at runtime
+      API_UPSTREAM: api:3000
+    depends_on:
+      - api
+    restart: always
+
+  # ── MongoDB (optional — use Atlas in production) ───────────────────────────────
+  # mongo:
+  #   image: mongo:7
+  #   environment:
+  #     MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USER}
+  #     MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD}
+  #   volumes:
+  #     - mongo_data_prod:/data/db
+  #     - ./infra/db/mongo:/docker-entrypoint-initdb.d:ro
+  #   restart: always
+
+  # ── PostgreSQL (optional — use RDS in production) ─────────────────────────────
+  # postgres:
+  #   image: postgres:16-alpine
+  #   environment:
+  #     POSTGRES_USER: ${POSTGRES_USER}
+  #     POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+  #     POSTGRES_DB: ${POSTGRES_DB}
+  #   volumes:
+  #     - postgres_data_prod:/var/lib/postgresql/data
+  #     - ./infra/db/postgres:/docker-entrypoint-initdb.d:ro
+  #   restart: always
+
+# volumes:
+#   mongo_data_prod:
+#   postgres_data_prod:

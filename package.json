@@ -1,9 +1,16 @@
 {
   "name": "an-enterprise-nestjs-example",
   "version": "1.0.0",
-  "description": "This application demonstrates concepts of my recent conversation with Horacio.",
-  "main": "index.js",
+  "description": "E-commerce API platform — modular monolith with hexagonal architecture",
   "author": "Pablo Andura",
   "license": "MIT",
-  "private": false
+  "private": true,
+  "scripts": {
+    "dev": "docker compose -f docker-compose.dev.yml up",
+    "dev:build": "docker compose -f docker-compose.dev.yml up --build",
+    "dev:down": "docker compose -f docker-compose.dev.yml down",
+    "prod:build": "docker compose -f docker-compose.prod.yml build",
+    "prod:up": "docker compose -f docker-compose.prod.yml up -d",
+    "prod:down": "docker compose -f docker-compose.prod.yml down"
+  }
 }
