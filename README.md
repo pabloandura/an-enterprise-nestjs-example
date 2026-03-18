@@ -21,8 +21,6 @@ an-enterprise-nestjs-example/
 ├── docker-compose.dev.yml          ← Local development (hot-reload, local disk storage)
 ├── docker-compose.prod.yml         ← Production-ready (S3 storage driver)
 ├── .env.example                    ← All required env vars documented
-└── docs/
-    └── aws-deployment-guide.md     ← Step-by-step AWS setup guide
 ```
 
 ## Architecture Decision Records
