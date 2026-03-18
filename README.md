@@ -168,7 +168,7 @@ DOCDB_PASSWORD=<same> \
 ./infra/cloudformation/deploy.sh
 ```
 
-The script prints all GitHub Actions secrets at the end so CI/CD can be wired up immediately. See [`docs/aws-deployment-guide.md`](docs/aws-deployment-guide.md) for the full step-by-step walkthrough including environment variable generation, Secrets Manager setup, and the GitHub Actions workflow.
+The script prints all GitHub Actions secrets at the end so CI/CD can be wired up immediately.
 
 ### Architecture
 
