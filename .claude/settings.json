@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git config:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Read(//Users/pablo/Documents/programacion/backend-nestjs/**)",
+      "Bash(npx --yes @nestjs/cli new . --package-manager yarn --skip-git --strict)",
+      "Bash(yarn add:*)",
+      "Bash(rm -f src/app.controller.ts src/app.controller.spec.ts src/app.service.ts)",
+      "Bash(mkdir -p src/modules/auth/domain/entities src/modules/auth/domain/events src/modules/auth/domain/ports src/modules/auth/application/use-cases src/modules/auth/application/dtos src/modules/auth/infrastructure/persistence src/modules/auth/infrastructure/http src/modules/auth/infrastructure/guards src/modules/auth/infrastructure/strategies src/modules/products/domain/entities src/modules/products/domain/events src/modules/products/domain/ports src/modules/products/application/use-cases src/modules/products/application/dtos src/modules/products/infrastructure/persistence src/modules/products/infrastructure/http src/modules/products/infrastructure/pipes src/modules/products/infrastructure/storage src/modules/orders/domain/entities src/modules/orders/domain/events src/modules/orders/domain/ports src/modules/orders/application/use-cases src/modules/orders/application/dtos src/modules/orders/infrastructure/persistence src/modules/orders/infrastructure/http src/common/filters src/common/interceptors src/common/middleware src/common/decorators src/common/pipes src/config)"
+    ],
+    "additionalDirectories": [
+      "/Users/pablo/Documents/programacion/backend-nestjs/src/config"
+    ]
+  }
+}
