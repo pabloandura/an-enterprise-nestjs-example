@@ -1,18 +1,28 @@
 # Enterprise NestJS E-Commerce Platform
 
-A production-grade e-commerce API demonstrating senior-level engineering practices: hexagonal architecture, polyglot persistence, JWT security with refresh token rotation, domain events, and containerised deployment targeting AWS.
+A production-grade e-commerce platform built with NestJS. Uses hexagonal architecture, polyglot persistence (PostgreSQL + MongoDB), JWT with refresh token rotation, domain events, and CloudFormation-managed AWS deployment.
 
 ## Repository Layout
 
 ```
 an-enterprise-nestjs-example/
-├── backend/               ← Git submodule → github.com/pabloandura/backend-nestjs
-├── frontend/              ← Git submodule → github.com/pabloandura/frontend-react
-├── infra/                 ← AWS deployment artefacts (ECS task defs, Terraform)
-├── docker-compose.dev.yml ← Local development (hot-reload, local disk storage)
-├── docker-compose.prod.yml← Production-ready (AWS/S3 storage driver)
-├── .env.example           ← All required env vars documented
-└── docs/initial-arch-idea.md ← Original acceptance criteria document
+├── backend/                        ← Git submodule → github.com/pabloandura/backend-nestjs
+├── frontend/                       ← Git submodule → github.com/pabloandura/frontend-react
+├── infra/
+│   ├── cloudformation/             ← CloudFormation stacks (deploy to AWS)
+│   │   ├── 01-networking.yml       ← VPC, subnets, security groups
+│   │   ├── 02-storage.yml          ← S3 bucket
+│   │   ├── 03-databases.yml        ← RDS PostgreSQL + DocumentDB
+│   │   ├── 04-compute.yml          ← ECR, ECS, ALB, IAM
+│   │   └── deploy.sh               ← Deploys all stacks in order
+│   └── db/
+│       ├── postgres/01-init-schema.sql
+│       └── mongo/01-init-indexes.js
+├── docker-compose.dev.yml          ← Local development (hot-reload, local disk storage)
+├── docker-compose.prod.yml         ← Production-ready (S3 storage driver)
+├── .env.example                    ← All required env vars documented
+└── docs/
+    └── aws-deployment-guide.md     ← Step-by-step AWS setup guide
 ```
 
 ## Architecture Decision Records
@@ -131,7 +141,53 @@ See [`.env.example`](.env.example) — no secrets have default values. Required 
 | `MONGO_URI` | `mongodb://mongo:27017/ecommerce` | MongoDB connection |
 | `STORAGE_DRIVER` | `local` / `s3` | Switches between `LocalStorageAdapter` and `S3StorageAdapter` |
 
-## Production
+## Infrastructure as Code (AWS)
+
+The [`infra/cloudformation/`](infra/cloudformation/) directory contains four CloudFormation stacks that deploy the full AWS environment. They must be deployed in order because each stack exports values consumed by the next.
+
+| Stack | File | What it creates |
+|---|---|---|
+| 1 — Networking | [`01-networking.yml`](infra/cloudformation/01-networking.yml) | VPC, 6 subnets across 2 AZs, IGW, NAT Gateway, 5 security groups |
+| 2 — Storage | [`02-storage.yml`](infra/cloudformation/02-storage.yml) | S3 bucket for product image uploads |
+| 3 — Databases | [`03-databases.yml`](infra/cloudformation/03-databases.yml) | RDS PostgreSQL 16 (auth) + DocumentDB (products/orders) |
+| 4 — Compute | [`04-compute.yml`](infra/cloudformation/04-compute.yml) | ECR repos, IAM roles, ECS Fargate cluster, ALB, ECS services, GitHub OIDC role |
+
+### Deploy
+
+```bash
+# First run: networking + storage + databases only
+SKIP_COMPUTE=true \
+POSTGRES_PASSWORD=<generated> \
+DOCDB_PASSWORD=<generated> \
+./infra/cloudformation/deploy.sh
+
+# After pushing images and creating the Secrets Manager secret:
+API_SECRET_ARN=arn:aws:secretsmanager:... \
+POSTGRES_PASSWORD=<same> \
+DOCDB_PASSWORD=<same> \
+./infra/cloudformation/deploy.sh
+```
+
+The script prints all GitHub Actions secrets at the end so CI/CD can be wired up immediately. See [`docs/aws-deployment-guide.md`](docs/aws-deployment-guide.md) for the full step-by-step walkthrough including environment variable generation, Secrets Manager setup, and the GitHub Actions workflow.
+
+### Architecture
+
+```
+Internet
+    │
+    ▼
+ALB (public subnets, 2 AZs)
+    ├── /api/*  ──► api ECS task (private subnet)
+    │                  ├── RDS PostgreSQL (isolated subnet)
+    │                  └── DocumentDB    (isolated subnet)
+    └── /*      ──► frontend ECS task (private subnet, Nginx)
+```
+
+All ECS tasks run in private subnets with no public IP. Databases are in isolated subnets with no internet route. The API task role has scoped S3 access for file uploads — no static AWS credentials in the application.
+
+---
+
+## Production (local)
 
 ```bash
 docker compose -f docker-compose.prod.yml up --build
